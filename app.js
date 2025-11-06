@@ -6,6 +6,21 @@ import db from "./db.js";
 
 const app = express();
 
+// Enable CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
 app.use(bodyParser.json());
 
 // ---------------- SESSION ----------------
@@ -57,7 +72,7 @@ app.post("/login", async (req, res) => {
   }
 
   try {
-     const [rows] = await db
+    const [rows] = await db
       .promise()
       .query("SELECT * FROM users WHERE username = ?", [username]);
 
@@ -66,19 +81,24 @@ app.post("/login", async (req, res) => {
     }
 
     const user = rows[0];
-
     const isMatch = await bcrypt.compare(password, user.password);
 
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid password" });
     }
 
-    const sessionUser = { id: user.id, username: user.username };
+    const sessionUser = { 
+      id: user.id, 
+      username: user.username,
+      role: user.role || 'student' // Default to 'student' if role is not set
+    };
+    
     req.session.user = sessionUser;
 
-    res
-      .status(200)
-      .json({ message: "Login successful", user: sessionUser });
+    res.status(200).json({ 
+      message: "Login successful", 
+      user: sessionUser 
+    });
   } catch (error) {
     console.error("❌ Login error:", error);
     res.status(500).json({ message: "Server error" });
@@ -94,50 +114,70 @@ app.get("/api/asset", (req, res) => {
 });
 
 // ---------------- BORROW REQUEST ----------------
-app.post("/api/borrow", (req, res) => {
-  // ดึง id ของ user จาก session
-  const student_id = req.session.user?.id;
-  const { asset_id, borrow_date, return_date } = req.body;
+app.post("/api/borrow", async (req, res) => {
+  try {
+    const student_id = req.session.user?.id;
+    const { asset_id, borrow_date, return_date } = req.body;
 
-  // ถ้าไม่มี session (ยังไม่ล็อกอิน)
-  if (!student_id) {
-    return res.status(401).json({ message: "Unauthorized: please login first" });
-  }
+    // Check if user is logged in
+    if (!student_id) {
+      return res.status(401).json({ message: "Unauthorized: please login first" });
+    }
 
-  // ตรวจสอบว่าข้อมูลครบไหม
-  if (!asset_id || !borrow_date || !return_date) {
-    return res.status(400).json({ message: "Missing required fields" });
-  }
+    // Validate required fields
+    if (!asset_id || !borrow_date || !return_date) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
 
-  // 1️⃣ ตรวจสอบว่าสินค้ามีอยู่และยังว่างไหม
-  db.query("SELECT status FROM assets WHERE id = ?", [asset_id], (err, rows) => {
-    if (err) return res.status(500).json({ message: "Server error" });
-    if (rows.length === 0) return res.status(404).json({ message: "Asset not found" });
+    // Check if user has already borrowed an asset today
+    const [existingBorrows] = await db.promise().query(
+      `SELECT * FROM borrowing 
+       WHERE user_id = ? 
+       AND DATE(borrow_date) = CURDATE()
+       AND returned = 'False'`,
+      [student_id]
+    );
 
-    const status = rows[0].status;
+    if (existingBorrows.length > 0) {
+      return res.status(400).json({ 
+        message: "You have already borrowed an asset today. Only one asset per day is allowed." 
+      });
+    }
+
+    // 1️⃣ Check if asset exists and is available
+    const [assetRows] = await db.promise().query(
+      "SELECT status FROM assets WHERE id = ?", 
+      [asset_id]
+    );
+
+    if (assetRows.length === 0) {
+      return res.status(404).json({ message: "Asset not found" });
+    }
+
+    const status = assetRows[0].status;
     if (status !== "Available") {
       return res.status(400).json({ message: "Asset not available" });
     }
 
-    // 2️⃣ บันทึกข้อมูลการยืม (ใช้ student_id จาก session)
-    db.query(
-      "INSERT INTO borrowing (asset_id, user_id, borrow_date, return_date, status, returned) VALUES (?, ?, ?, ?, ?, ?)",
-      [asset_id, student_id, borrow_date, return_date, "Pending", "False"],
-      (err2) => {
-        if (err2) return res.status(500).json({ message: "Server error" });
-
-        // 3️⃣ อัปเดตสถานะของ asset เป็น Pending
-        db.query(
-          "UPDATE assets SET status = 'Pending' WHERE id = ?",
-          [asset_id],
-          (err3) => {
-            if (err3) return res.status(500).json({ message: "Server error" });
-            res.json({ message: "Borrow request submitted successfully" });
-          }
-        );
-      }
+    // 2️⃣ Insert borrowing record
+    await db.promise().query(
+      `INSERT INTO borrowing 
+       (asset_id, user_id, borrow_date, return_date, status, returned) 
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [asset_id, student_id, borrow_date, return_date, "Pending", "False"]
     );
-  });
+
+    // 3️⃣ Update asset status to Pending
+    await db.promise().query(
+      "UPDATE assets SET status = 'Pending' WHERE id = ?",
+      [asset_id]
+    );
+
+    res.json({ message: "Borrow request submitted successfully" });
+  } catch (error) {
+    console.error("Borrow error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
 
 
@@ -174,5 +214,29 @@ app.post("/logout", (req, res) => {
   res.json({ message: "Logout successful" });
 });
 
+// ---------------- HEALTH CHECK ----------------
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    await db.promise().query('SELECT 1');
+    res.json({
+      status: 'ok',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Database connection error:', error);
+    res.status(500).json({
+      status: 'error',
+      database: 'connection failed',
+      error: error.message
+    });
+  }
+});
+
 // ---------------- START SERVER ----------------
-app.listen(3000, () => console.log("✅ API running on port 3000"));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ API running on port ${PORT}`);
+  console.log(`🔍 Health check available at http://localhost:${PORT}/health`);
+});
