@@ -6,11 +6,17 @@ import db from "./db.js";
 
 const app = express();
 
-// Enable CORS
+// Enable CORS with credentials
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // Allow your Flutter app's origin
+  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.121:3000'];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.header('Access-Control-Allow-Credentials', 'true');
   
   // Handle preflight requests
@@ -28,8 +34,14 @@ app.use(
   session({
     secret: "secret-key",
     resave: false,
-    saveUninitialized: true,
-    cookie: { secure: false },
+    saveUninitialized: false,
+    cookie: { 
+      secure: false, // Set to true if using HTTPS
+      httpOnly: true,
+      sameSite: 'lax', // Helps with CSRF protection
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    },
+    name: 'sessionId' // Explicitly name the session cookie
   })
 );
 
@@ -182,18 +194,71 @@ app.post("/api/borrow", async (req, res) => {
 
 
 
-// ---------------- GET BORROW HISTORY ----------------
-app.get("/api/history/:id", (req, res) => {
-  const userId = req.params.id;
+// ---------------- CHECK BORROW REQUESTS ----------------
+app.get("/api/borrow-requests/check", async (req, res) => {
+  console.log('Received request to /api/borrow-requests/check');
+  try {
+    const userId = req.session.user?.id;
+    console.log('User ID from session:', userId);
 
+    if (!userId) {
+      console.log('No user ID in session');
+      return res.status(401).json({ message: "Unauthorized: please login first" });
+    }
+
+    console.log('Querying database for user ID:', userId);
+    db.query(
+      `SELECT b.*, a.asset_name 
+       FROM borrowing b
+       JOIN assets a ON b.asset_id = a.id 
+       WHERE b.user_id = ? AND b.returned = 'False'`,
+      [userId],
+      (error, rows) => {
+        if (error) {
+          console.error('Database error:', error);
+          return res.status(500).json({ message: "Database error" });
+        }
+        console.log('Query results:', rows);
+        res.json({ 
+          hasActiveRequest: rows.length > 0,
+          requests: rows 
+        });
+      }
+    );
+  } catch (error) {
+    console.error("Error checking borrow requests:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ---------------- GET BORROW HISTORY ----------------
+app.get("/api/history", (req, res) => {
+  // Get the user ID from the session, NOT the URL
+  const userId = req.session.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  // Updated query to select asset image and returned status
   db.query(
-    `SELECT a.asset_name, b.borrow_date, b.return_date, b.status
+    `SELECT 
+        a.asset_name,
+        DATE_FORMAT(b.borrow_date, '%Y-%m-%d') as borrow_date,
+        DATE_FORMAT(b.return_date, '%Y-%m-%d') as return_date,
+        (SELECT name FROM users WHERE id = b.approved_by) as approved_by,
+        (SELECT name FROM users WHERE id = b.processed_by) as processed_by,
+        'Returned' as status
      FROM borrowing b
      JOIN assets a ON b.asset_id = a.id
-     WHERE b.user_id = ?`,
+     WHERE b.user_id = ? AND b.returned = 1
+     ORDER BY b.borrow_date DESC`,
     [userId],
     (err, rows) => {
-      if (err) return res.status(500).json({ message: "Server error" });
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ message: "Server error" });
+      }
       res.json(rows);
     }
   );
