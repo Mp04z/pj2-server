@@ -285,6 +285,111 @@ app.get("/api/history", (req, res) => {
   });
 });
 
+// ---------------- APPROVE / DISAPPROVE BY LENDER ----------------
+app.patch('/api/borrow/:borrowId', async (req, res) => {
+  const { status } = req.body; // "Approved" หรือ "Disapproved"
+  const { borrowId } = req.params;
+  const lenderId = req.session.user?.id; // ใช้ lender_id จาก session
+  const role = req.session.user?.role?.toLowerCase();
+
+  console.log("Session data:", req.session);
+
+  if (role !== "lender") {
+    return res.status(403).json({ message: "Forbidden: Only lender can approve or disapprove" });
+  }
+
+  if (!status || (status !== "Approved" && status !== "Disapproved")) {
+    return res.status(400).json({ message: "Invalid status. Allowed values are 'Approved' or 'Disapproved'" });
+  }
+
+  if (!lenderId) {
+    return res.status(401).json({ message: "Unauthorized: lender not logged in" });
+  }
+
+  try {
+    const borrowQuery = 'SELECT asset_id FROM borrowing WHERE id = ? AND status = "Pending"';
+    const [borrowRows] = await db.promise().query(borrowQuery, [borrowId]);
+
+    if (borrowRows.length === 0) {
+      return res.status(404).json({ message: "Borrow request not found or already processed" });
+    }
+
+    const assetId = borrowRows[0].asset_id;
+
+    const newBorrowStatus = status;
+    const returned = status === "Approved" ? "True" : "False";
+
+    const updateBorrowQuery = `
+      UPDATE borrowing
+      SET status = ?, returned = ?, lender_id = ?
+      WHERE id = ? AND status = "Pending"
+    `;
+    const [borrowUpdateResult] = await db.promise().query(updateBorrowQuery, [newBorrowStatus, returned, lenderId, borrowId]);
+
+    if (borrowUpdateResult.affectedRows === 0) {
+      return res.status(404).json({ message: "Borrow request not found or already processed" });
+    }
+
+    const assetStatus = status === "Approved" ? "Borrowed" : "Available";
+    const updateAssetQuery = 'UPDATE assets SET status = ? WHERE id = ?';
+    await db.promise().query(updateAssetQuery, [assetStatus, assetId]);
+
+    res.status(200).json({
+      message: `Borrow request ${status.toLowerCase()} and asset status updated to ${assetStatus}`,
+      borrow_status: newBorrowStatus,
+      returned_status: returned,
+      asset_status: assetStatus
+    });
+
+  } catch (err) {
+    console.error("Error updating borrow and asset status:", err);
+    res.status(500).json({ message: "Failed to update borrow and asset status", error: err.message });
+  }
+});
+
+// ---------------- DASHBOARDS ----------------
+app.get('/api/dashboard', (req, res) => {
+  const sql = `
+    SELECT
+      (SELECT COUNT(*) FROM assets WHERE status = 'Available') AS Available,
+      (SELECT COUNT(*) FROM assets WHERE status = 'Borrowed') AS Borrowed,
+      (SELECT COUNT(*) FROM assets WHERE status = 'Disable') AS Disabled
+  `;
+
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching dashboard data:', err);
+      return res.status(500).json({ message: 'Error fetching data' });
+    }
+
+    res.json(results[0]);
+  });
+});
+
+// ---------------- CHECK REQUESTED FOR LENDER ----------------
+app.get('/api/checkrequest', (req, res) => {
+  const query = `
+    SELECT 
+      b.id, 
+      a.asset_name, 
+      b.borrow_date, 
+      u.username AS borrowed_by,  
+      b.status
+    FROM borrowing b
+    LEFT JOIN assets a ON b.asset_id = a.id
+    LEFT JOIN users u ON b.user_id = u.id
+    WHERE b.status = 'pending';
+    `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching borrowing:', err);
+      return res.status(500).json({ message: 'Error fetching borrowing' });
+    }
+    console.log("API Response:", results);  
+    res.json(results);
+  });
+});
 
 // ---------------- CHECK SESSION ----------------
 app.get("/me", (req, res) => {
