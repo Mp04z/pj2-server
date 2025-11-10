@@ -9,21 +9,21 @@ const app = express();
 // Enable CORS with credentials
 app.use((req, res, next) => {
   // Allow your Flutter app's origin
-  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.121:3000'];
+  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.7:3000'];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
-  
+
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.header('Access-Control-Allow-Credentials', 'true');
-  
+
   // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-  
+
   next();
 });
 
@@ -35,7 +35,7 @@ app.use(
     secret: "secret-key",
     resave: false,
     saveUninitialized: false,
-    cookie: { 
+    cookie: {
       secure: false, // Set to true if using HTTPS
       httpOnly: true,
       sameSite: 'lax', // Helps with CSRF protection
@@ -99,17 +99,17 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ message: "Invalid password" });
     }
 
-    const sessionUser = { 
-      id: user.id, 
+    const sessionUser = {
+      id: user.id,
       username: user.username,
       role: user.role || 'student' // Default to 'student' if role is not set
     };
-    
+
     req.session.user = sessionUser;
 
-    res.status(200).json({ 
-      message: "Login successful", 
-      user: sessionUser 
+    res.status(200).json({
+      message: "Login successful",
+      user: sessionUser
     });
   } catch (error) {
     console.error("❌ Login error:", error);
@@ -151,14 +151,14 @@ app.post("/api/borrow", async (req, res) => {
     );
 
     if (existingBorrows.length > 0) {
-      return res.status(400).json({ 
-        message: "You have already borrowed an asset today. Only one asset per day is allowed." 
+      return res.status(400).json({
+        message: "You have already borrowed an asset today. Only one asset per day is allowed."
       });
     }
 
     // 1️⃣ Check if asset exists and is available
     const [assetRows] = await db.promise().query(
-      "SELECT status FROM assets WHERE id = ?", 
+      "SELECT status FROM assets WHERE id = ?",
       [asset_id]
     );
 
@@ -219,9 +219,9 @@ app.get("/api/borrow-requests/check", async (req, res) => {
           return res.status(500).json({ message: "Database error" });
         }
         console.log('Query results:', rows);
-        res.json({ 
+        res.json({
           hasActiveRequest: rows.length > 0,
-          requests: rows 
+          requests: rows
         });
       }
     );
@@ -233,36 +233,58 @@ app.get("/api/borrow-requests/check", async (req, res) => {
 
 // ---------------- GET BORROW HISTORY ----------------
 app.get("/api/history", (req, res) => {
-  // Get the user ID from the session, NOT the URL
   const userId = req.session.user?.id;
+  const role = req.session.user?.role?.toLowerCase();
 
-  if (!userId) {
+  if (!userId || !role) {
     return res.status(401).json({ message: "Unauthorized" });
   }
 
-  // Updated query to select asset image and returned status
-  db.query(
-    `SELECT 
+  let query = `
+    SELECT 
+        b.id,
         a.asset_name,
-        DATE_FORMAT(b.borrow_date, '%Y-%m-%d') as borrow_date,
-        DATE_FORMAT(b.return_date, '%Y-%m-%d') as return_date,
-        (SELECT name FROM users WHERE id = b.approved_by) as approved_by,
-        (SELECT name FROM users WHERE id = b.processed_by) as processed_by,
-        'Returned' as status
-     FROM borrowing b
-     JOIN assets a ON b.asset_id = a.id
-     WHERE b.user_id = ? AND b.returned = 1
-     ORDER BY b.borrow_date DESC`,
-    [userId],
-    (err, rows) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ message: "Server error" });
-      }
-      res.json(rows);
+        DATE_FORMAT(b.borrow_date, '%Y-%m-%d') AS borrow_date,
+        DATE_FORMAT(b.return_date, '%Y-%m-%d') AS return_date,
+        b.lender_id,
+        b.staff_id,
+        b.status
+    FROM borrowing b
+    JOIN assets a ON b.asset_id = a.id
+    JOIN users u ON b.user_id = u.id
+  `;
+
+  if (role === "student") {
+    query += `
+      WHERE b.user_id = ? 
+      AND b.status IN ('Approved', 'Disapproved')
+      ORDER BY b.borrow_date DESC, b.return_date DESC
+    `;
+  } else if (role === "lender") {
+    query += `
+      WHERE b.lender_id = ? 
+      AND b.status IN ('Approved', 'Disapproved')
+      ORDER BY b.borrow_date DESC, b.return_date DESC
+    `;
+  } else if (role === "staff") {
+    query += `
+      ORDER BY b.borrow_date DESC, b.return_date DESC
+    `;
+  } else {
+    return res.status(403).json({ message: "Forbidden: Role not allowed to view history" });
+  }
+
+  const params = (role === "student" || role === "lender") ? [userId] : [];
+
+  db.query(query, params, (err, rows) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({ message: "Server error" });
     }
-  );
+    res.json(rows);
+  });
 });
+
 
 // ---------------- CHECK SESSION ----------------
 app.get("/me", (req, res) => {
@@ -296,6 +318,19 @@ app.get('/health', async (req, res) => {
       database: 'connection failed',
       error: error.message
     });
+  }
+});
+
+// ---------------- GET CURRENT USER INFO ----------------
+app.get("/me", (req, res) => {
+  if (req.session.userID) {
+    res.json({
+      userID: req.session.userID,
+      username: req.session.username,
+      role: req.session.role
+    });
+  } else {
+    res.status(401).send("Not logged in");
   }
 });
 
