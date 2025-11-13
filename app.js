@@ -9,7 +9,7 @@ const app = express();
 // Enable CORS with credentials
 app.use((req, res, next) => {
   // Allow your Flutter app's origin
-  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.7:3000'];
+  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://172.22.112.1:3000'];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
@@ -242,16 +242,19 @@ app.get("/api/history", (req, res) => {
 
   let query = `
     SELECT 
-        b.id,
-        a.asset_name,
-        DATE_FORMAT(b.borrow_date, '%Y-%m-%d') AS borrow_date,
-        DATE_FORMAT(b.return_date, '%Y-%m-%d') AS return_date,
-        b.lender_id,
-        b.staff_id,
-        b.status
+      b.id,
+      a.asset_name,
+      DATE_FORMAT(b.borrow_date, '%Y-%m-%d') AS borrow_date,
+      DATE_FORMAT(b.return_date, '%Y-%m-%d') AS return_date,
+      u.username AS borrower_name,
+      lender.username AS lender_name,
+      staff.username AS staff_name,
+      b.status
     FROM borrowing b
     JOIN assets a ON b.asset_id = a.id
-    JOIN users u ON b.user_id = u.id
+    JOIN users u ON b.user_id = u.id        
+    LEFT JOIN users lender ON b.lender_id = lender.id  
+    LEFT JOIN users staff ON b.staff_id = staff.id   
   `;
 
   if (role === "student") {
