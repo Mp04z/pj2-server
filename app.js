@@ -9,7 +9,7 @@ const app = express();
 // Enable CORS with credentials
 app.use((req, res, next) => {
   // Allow your Flutter app's origin
-  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://172.22.112.1:3000'];
+  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.7:3000'];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
@@ -44,6 +44,7 @@ app.use(
     name: 'sessionId' // Explicitly name the session cookie
   })
 );
+
 
 // ---------------- REGISTER ----------------
 app.post("/register", async (req, res) => {
@@ -142,17 +143,17 @@ app.post("/api/borrow", async (req, res) => {
     }
 
     // Check if user has already borrowed an asset today
-    const [existingBorrows] = await db.promise().query(
+    const [activeBorrows] = await db.promise().query(
       `SELECT * FROM borrowing 
-       WHERE user_id = ? 
-       AND DATE(borrow_date) = CURDATE()
-       AND returned = 'False'`,
+        WHERE user_id = ?
+        AND status IN ('Approved', 'Pending')
+        AND returned = 'False'`,
       [student_id]
     );
 
-    if (existingBorrows.length > 0) {
+    if (activeBorrows.length > 0) {
       return res.status(400).json({
-        message: "You have already borrowed an asset today. Only one asset per day is allowed."
+        message: "You already have an active borrowing request or approved borrow."
       });
     }
 
@@ -320,7 +321,7 @@ app.patch('/api/borrow/:borrowId', async (req, res) => {
     const assetId = borrowRows[0].asset_id;
 
     const newBorrowStatus = status;
-    const returned = status === "Approved" ? "True" : "False";
+    const returned = status === "Approved" ? "False" : "True";
 
     const updateBorrowQuery = `
       UPDATE borrowing
@@ -389,7 +390,7 @@ app.get('/api/checkrequest', (req, res) => {
       console.error('Error fetching borrowing:', err);
       return res.status(500).json({ message: 'Error fetching borrowing' });
     }
-    console.log("API Response:", results);  
+    console.log("API Response:", results);
     res.json(results);
   });
 });
