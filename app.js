@@ -395,6 +395,89 @@ app.get('/api/checkrequest', (req, res) => {
   });
 });
 
+
+// ---------------- DELETE ASSET ----------------
+app.delete("/api/assets/:id", async (req, res) => {
+  const staffId = req.session.user?.id;
+  const role = req.session.user?.role?.toLowerCase();
+  const { id } = req.params;
+
+  if (!staffId || role !== "staff") {
+    return res.status(403).json({ message: "Forbidden: Staff only" });
+  }
+
+  try {
+    const [result] = await db.promise().query(
+      "DELETE FROM assets WHERE id = ?",
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Asset not found" });
+    }
+
+    res.json({ message: "Asset deleted successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ---------------- DISABLE/ENABLE ASSET ----------------
+app.patch("/api/assets/:id/status", async (req, res) => {
+  const staffId = req.session.user?.id;
+  const role = req.session.user?.role?.toLowerCase();
+  const { id } = req.params;
+  const { status } = req.body;  
+
+  if (!staffId || role !== "staff") {
+    return res.status(403).json({ message: "Forbidden: Staff only" });
+  }
+
+  if (!["Available", "Disable"].includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
+  }
+
+  try {
+    const [rows] = await db.promise().query(
+      "SELECT status FROM assets WHERE id = ?",
+      [id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Asset not found" });
+    }
+
+    const currentStatus = rows[0].status;
+
+    const allowedTransitions = {
+      "Available": ["Disable"],
+      "Disable": ["Available"]
+    };
+
+    if (!allowedTransitions[currentStatus]?.includes(status)) {
+      return res.status(400).json({
+        message: `Cannot change status from '${currentStatus}' to '${status}'`
+      });
+    }
+
+    const result = await db.promise().query(
+      "UPDATE assets SET status = ? WHERE id = ?",
+      [status, id]
+    );
+
+    if (result[0].affectedRows === 0) {
+      return res.status(404).json({ message: "Asset not found" });
+    }
+
+    res.json({ message: `Asset status updated to ${status}` });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 // ---------------- CHECK SESSION ----------------
 app.get("/me", (req, res) => {
   if (req.session.user) {
