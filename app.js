@@ -428,7 +428,7 @@ app.patch("/api/assets/:id/status", async (req, res) => {
   const staffId = req.session.user?.id;
   const role = req.session.user?.role?.toLowerCase();
   const { id } = req.params;
-  const { status } = req.body;  
+  const { status } = req.body;
 
   if (!staffId || role !== "staff") {
     return res.status(403).json({ message: "Forbidden: Staff only" });
@@ -477,6 +477,91 @@ app.patch("/api/assets/:id/status", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// ---------------- GET RETURN ITEMS (STAFF ONLY) ----------------
+app.get("/api/return", async (req, res) => {
+  const staffId = req.session.user?.id;
+  const role = req.session.user?.role?.toLowerCase();
+
+  if (!staffId || role !== "staff") {
+    return res.status(403).json({ message: "Forbidden: Staff only" });
+  }
+
+  try {
+    const [rows] = await db.promise().query(
+      `
+      SELECT         
+        b.id AS borrow_id,
+        a.id AS asset_id,
+        a.asset_name,
+        u.username AS borrower_name,
+        DATE_FORMAT(b.borrow_date, '%d-%m-%Y') AS borrow_date,
+        DATE_FORMAT(b.return_date, '%d-%m-%Y') AS return_date,
+        lender.username AS approved_by,
+        b.status
+      FROM borrowing b
+      JOIN assets a ON b.asset_id = a.id
+      JOIN users u ON b.user_id = u.id
+      LEFT JOIN users lender ON b.lender_id = lender.id   
+      WHERE b.status = 'Approved'
+        AND b.returned = 'False'
+        AND b.return_date < CURDATE()
+      ORDER BY b.return_date ASC 
+      `
+    );
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ---------------- STAFF PROCESS RETURN ----------------
+app.patch("/api/process-return/:borrowId", async (req, res) => {
+  const staffId = req.session.user?.id;
+  const role = req.session.user?.role?.toLowerCase();
+  const { borrowId } = req.params;
+
+  if (!staffId || role !== "staff") {
+    return res.status(403).json({ message: "Forbidden: Staff only" });
+  }
+
+  try {
+    const [borrowRows] = await db.promise().query(
+      `SELECT asset_id FROM borrowing 
+       WHERE id = ? AND returned = 'False'`,
+      [borrowId]
+    );
+
+    if (borrowRows.length === 0) {
+      return res.status(404).json({ message: "Borrow record not found or already returned" });
+    }
+
+    const assetId = borrowRows[0].asset_id;
+
+    await db.promise().query(
+      `
+      UPDATE borrowing 
+      SET returned = 'True', staff_id = ?
+      WHERE id = ?
+      `,
+      [staffId, borrowId]
+    );
+
+    await db.promise().query(
+      `UPDATE assets SET status = 'Available' WHERE id = ?`,
+      [assetId]
+    );
+
+    res.json({ message: "Return processed successfully" });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 
 // ---------------- CHECK SESSION ----------------
 app.get("/me", (req, res) => {
