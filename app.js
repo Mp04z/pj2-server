@@ -45,6 +45,24 @@ app.use(
   })
 );
 
+import multer from "multer";
+import path from "path";
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/assets/");
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage: storage });
+
+export default upload;
+
+app.use("/uploads", express.static("uploads"));
+
 
 // ---------------- REGISTER ----------------
 app.post("/register", async (req, res) => {
@@ -560,6 +578,42 @@ app.patch("/api/process-return/:borrowId", async (req, res) => {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
+});
+
+// TO EDIT BOOKS DETAIL (STAFF)
+app.put('/staff/edit/:id', function (req, res) {
+    const assetId = req.params.id;
+    const { asset_name, status, image } = req.body;
+    const sql = `UPDATE assets SET asset_name = ?, status = ?, image= ? WHERE id = ?;`; 
+    con.query(sql, [asset_name, status, image, assetId], (err, results) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).send("Database server error");
+        }
+        if (results.affectedRows === 0) {
+            return res.status(404).send("No records found for this book");
+        }
+        console.log("Book_id:", bookId);
+        res.json({ message: "asset updated successfully", results });
+
+    });
+});
+  
+
+// TO ADD A NEW BOOK (STAFF)
+app.post('/staff/adding', function (req, res) {
+    const { asset_name, status, image } = req.body;
+    if (!asset_name || !status || !image) {
+        return res.status(400).send("All fields are required: asset_name, status, image.");
+    }
+    const sql = 'INSERT INTO assets (asset_name, status, image) VALUES (?, ?, ?)';
+    con.query(sql, [asset_name, status, image], (err, result) => {
+        if (err) {
+            console.error("Database Error:", err);
+            return res.status(500).send("Database server error");
+        }
+        res.status(201).json({ message: "asset added successfully", id: result.insertId });
+    });
 });
 
 
