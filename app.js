@@ -3,19 +3,50 @@ import bodyParser from "body-parser";
 import session from "express-session";
 import bcrypt from "bcrypt";
 import db from "./db.js";
+import multer from "multer"; // Import multer
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from 'url';
 
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 1. CONFIGURE FILE STORAGE
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+// Configure storage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/'); // Save files here
+  },
+  filename: function (req, file, cb) {
+    // Create unique filename: timestamp-originalName
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ storage: storage });
+
+// 2. SERVE IMAGES
+// Access via: http://IP:3000/uploads/filename.jpg
+app.use('/uploads', express.static('uploads'));
+
 
 // Enable CORS with credentials
 app.use((req, res, next) => {
   // Allow your Flutter app's origin
-  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.7:3000'];
+  const allowedOrigins = ['http://localhost', 'http://localhost:3000', 'http://192.168.1.7:3000', 'http://172.22.112.1:3000', 'http://172.27.14.220:3000'];
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
 
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.header('Access-Control-Allow-Credentials', 'true');
 
@@ -44,25 +75,6 @@ app.use(
     name: 'sessionId' // Explicitly name the session cookie
   })
 );
-
-import multer from "multer";
-import path from "path";
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/assets/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  },
-});
-
-const upload = multer({ storage: storage });
-
-export default upload;
-
-app.use("/uploads", express.static("uploads"));
-
 
 // ---------------- REGISTER ----------------
 app.post("/register", async (req, res) => {
@@ -580,40 +592,58 @@ app.patch("/api/process-return/:borrowId", async (req, res) => {
   }
 });
 
-// TO EDIT BOOKS DETAIL (STAFF)
-app.put('/staff/edit/:id', function (req, res) {
+// ---------------- EDIT ASSET DETAIL (STAFF) ----------------
+app.put('/staff/edit/:id', upload.single('image'), async (req, res) => {
     const assetId = req.params.id;
-    const { asset_name, status, image } = req.body;
-    const sql = `UPDATE assets SET asset_name = ?, status = ?, image= ? WHERE id = ?;`; 
-    con.query(sql, [asset_name, status, image, assetId], (err, results) => {
-        if (err) {
-            console.error(err);
-            return res.status(500).send("Database server error");
-        }
-        if (results.affectedRows === 0) {
-            return res.status(404).send("No records found for this book");
-        }
-        console.log("Book_id:", bookId);
-        res.json({ message: "asset updated successfully", results });
+    const { asset_name, status } = req.body; // Note: fields come from body, image from file
 
-    });
+    try {
+        // 1. Check if asset exists
+        const [check] = await db.promise().query("SELECT * FROM assets WHERE id = ?", [assetId]);
+        if (check.length === 0) {
+            return res.status(404).json({ message: "No records found for this asset" });
+        }
+
+        // 2. Determine what to update
+        // If new file, use 'uploads/...' otherwise keep old path
+        const currentAsset = check[0];
+        const newImage = req.file ? `uploads/${req.file.filename}` : currentAsset.image;
+        const newName = asset_name || currentAsset.asset_name;
+        const newStatus = status || currentAsset.status;
+
+        // 3. Update database
+        const sql = `UPDATE assets SET asset_name = ?, status = ?, image = ? WHERE id = ?`;
+        const [result] = await db.promise().query(sql, [newName, newStatus, newImage, assetId]);
+
+        res.json({ message: "Asset updated successfully", results: result });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Database server error" });
+    }
 });
   
 
-// TO ADD A NEW BOOK (STAFF)
-app.post('/staff/adding', function (req, res) {
-    const { asset_name, status, image } = req.body;
-    if (!asset_name || !status || !image) {
-        return res.status(400).send("All fields are required: asset_name, status, image.");
+// ---------------- ADD NEW ASSET (STAFF) ----------------
+app.post('/staff/adding', upload.single('image'), async (req, res) => {
+    const { asset_name, status } = req.body;
+    
+    // If no file uploaded, use default or empty string
+    const imagePath = req.file ? `uploads/${req.file.filename}` : 'assets/images/default.jpg';
+
+    if (!asset_name || !status) {
+        return res.status(400).json({ message: "Asset name and status are required." });
     }
-    const sql = 'INSERT INTO assets (asset_name, status, image) VALUES (?, ?, ?)';
-    con.query(sql, [asset_name, status, image], (err, result) => {
-        if (err) {
-            console.error("Database Error:", err);
-            return res.status(500).send("Database server error");
-        }
-        res.status(201).json({ message: "asset added successfully", id: result.insertId });
-    });
+
+    try {
+        const sql = 'INSERT INTO assets (asset_name, status, image) VALUES (?, ?, ?)';
+        const [result] = await db.promise().query(sql, [asset_name, status, imagePath]);
+        
+        res.status(201).json({ message: "Asset added successfully", id: result.insertId });
+    } catch (err) {
+        console.error("Database Error:", err);
+        res.status(500).json({ message: "Database server error" });
+    }
 });
 
 
